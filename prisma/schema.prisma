@@ -1,0 +1,315 @@
+// Prisma schema for the venture capital firm operating platform.
+// SQLite is used as the default datasource for zero-config local/dev use.
+// Swap `provider`/`url` to "postgresql" + a connection string for production
+// (and you may reintroduce native `enum` blocks at that point — SQLite's
+// connector doesn't support them, so the allowed values below are enforced
+// in the TypeScript layer instead; see src/lib/enums.ts for the source of truth).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// People & access
+// Role: ADMIN | PARTNER | ASSOCIATE | ANALYST
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("ANALYST")
+  title        String?
+  colorTag     String   @default("#c8912a")
+  createdAt    DateTime @default(now())
+
+  leadDeals       Deal[]       @relation("DealLead")
+  leadInvestments Investment[] @relation("InvestmentLead")
+  notes           Note[]
+  tasks           Task[]       @relation("TaskAssignee")
+  documents       Document[]
+}
+
+// ---------------------------------------------------------------------------
+// Funds & LP capital
+// FundStatus: FUNDRAISING | INVESTING | HARVESTING | CLOSED
+// ---------------------------------------------------------------------------
+
+model Fund {
+  id               String    @id @default(cuid())
+  name             String
+  vintageYear      Int
+  targetSizeUsd    Float
+  managementFeePct Float     @default(2)
+  carryPct         Float     @default(20)
+  status           String    @default("FUNDRAISING")
+  closeDate        DateTime?
+  description      String?
+  createdAt        DateTime  @default(now())
+
+  commitments   Commitment[]
+  capitalCalls  CapitalCall[]
+  distributions Distribution[]
+  investments   Investment[]
+  documents     Document[]
+}
+
+// LpType: INSTITUTIONAL | FAMILY_OFFICE | FUND_OF_FUNDS | ENDOWMENT | CORPORATE | INDIVIDUAL
+model LimitedPartner {
+  id        String   @id @default(cuid())
+  name      String
+  type      String   @default("INSTITUTIONAL")
+  email     String?
+  phone     String?
+  country   String?
+  notes     String?
+  createdAt DateTime @default(now())
+
+  commitments Commitment[]
+}
+
+model Commitment {
+  id         String   @id @default(cuid())
+  fundId     String
+  lpId       String
+  amountUsd  Float
+  signedDate DateTime @default(now())
+
+  fund Fund           @relation(fields: [fundId], references: [id], onDelete: Cascade)
+  lp   LimitedPartner @relation(fields: [lpId], references: [id], onDelete: Cascade)
+
+  @@index([fundId])
+  @@index([lpId])
+}
+
+// CallStatus: PENDING | PARTIAL | COMPLETE
+model CapitalCall {
+  id         String   @id @default(cuid())
+  fundId     String
+  callNumber Int
+  purpose    String
+  amountUsd  Float
+  callDate   DateTime @default(now())
+  dueDate    DateTime
+  status     String   @default("PENDING")
+
+  fund Fund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@index([fundId])
+}
+
+// DistributionType: RETURN_OF_CAPITAL | CAPITAL_GAIN | DIVIDEND_INCOME
+model Distribution {
+  id                 String   @id @default(cuid())
+  fundId             String
+  distributionNumber Int
+  amountUsd          Float
+  distributionDate   DateTime @default(now())
+  type               String   @default("RETURN_OF_CAPITAL")
+
+  fund Fund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@index([fundId])
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio companies & investments
+// CompanyStage: PRE_SEED | SEED | SERIES_A | SERIES_B | SERIES_C_PLUS | GROWTH
+// CompanyStatus: ACTIVE | EXITED | WRITTEN_OFF
+// ---------------------------------------------------------------------------
+
+model PortfolioCompany {
+  id            String   @id @default(cuid())
+  name          String
+  tagline       String?
+  description   String?
+  website       String?
+  logoLabel     String   @default("")
+  sector        String
+  stage         String   @default("SEED")
+  status        String   @default("ACTIVE")
+  foundedYear   Int?
+  hqCity        String?
+  hqCountry     String?
+  employeeCount Int?
+  createdAt     DateTime @default(now())
+
+  investments Investment[]
+  metrics     CompanyMetric[]
+  notes       Note[]
+  documents   Document[]
+  contacts    Contact[]
+  tasks       Task[]
+}
+
+// SecurityType: SAFE | CONVERTIBLE_NOTE | PREFERRED_EQUITY | COMMON_EQUITY
+model Investment {
+  id                 String   @id @default(cuid())
+  portfolioCompanyId String
+  fundId             String
+  leadPartnerId      String?
+  roundName          String
+  investmentDate     DateTime @default(now())
+  amountInvestedUsd  Float
+  preMoneyUsd        Float?
+  postMoneyUsd       Float?
+  ownershipPct       Float?
+  securityType       String   @default("PREFERRED_EQUITY")
+  boardSeat          Boolean  @default(false)
+  currentValueUsd    Float?
+
+  company     PortfolioCompany @relation(fields: [portfolioCompanyId], references: [id], onDelete: Cascade)
+  fund        Fund             @relation(fields: [fundId], references: [id], onDelete: Cascade)
+  leadPartner User?            @relation("InvestmentLead", fields: [leadPartnerId], references: [id])
+
+  @@index([portfolioCompanyId])
+  @@index([fundId])
+}
+
+model CompanyMetric {
+  id                 String   @id @default(cuid())
+  portfolioCompanyId String
+  periodDate         DateTime
+  arrUsd             Float?
+  revenueUsd         Float?
+  grossMarginPct     Float?
+  burnRateUsd        Float?
+  cashBalanceUsd     Float?
+  headcount          Int?
+  runwayMonths       Float?
+
+  company PortfolioCompany @relation(fields: [portfolioCompanyId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioCompanyId])
+  @@unique([portfolioCompanyId, periodDate])
+}
+
+// ---------------------------------------------------------------------------
+// Deal pipeline (CRM)
+// DealStage: SOURCING | SCREENING | DUE_DILIGENCE | TERM_SHEET | CLOSED_WON | CLOSED_LOST
+// DealSource: REFERRAL | INBOUND | CONFERENCE | COLD_OUTREACH | EXISTING_PORTFOLIO | OTHER
+// ---------------------------------------------------------------------------
+
+model Deal {
+  id                 String    @id @default(cuid())
+  companyName        String
+  tagline            String?
+  website            String?
+  sector             String
+  stage              String    @default("SEED")
+  dealStage          String    @default("SOURCING")
+  dealSizeSoughtUsd  Float?
+  valuationExpectUsd Float?
+  source             String    @default("REFERRAL")
+  leadPartnerId      String?
+  probabilityPct     Int       @default(20)
+  nextStep           String?
+  nextStepDate       DateTime?
+  lostReason         String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  leadPartner User?      @relation("DealLead", fields: [leadPartnerId], references: [id])
+  notes       Note[]
+  contacts    Contact[]
+  tasks       Task[]
+  documents   Document[]
+
+  @@index([leadPartnerId])
+}
+
+// ContactType: FOUNDER | LP | ADVISOR | CO_INVESTOR | SERVICE_PROVIDER | OTHER
+model Contact {
+  id                 String  @id @default(cuid())
+  name               String
+  title              String?
+  organization       String?
+  email              String?
+  phone              String?
+  type               String  @default("FOUNDER")
+  linkedinUrl        String?
+  notesText          String?
+  dealId             String?
+  portfolioCompanyId String?
+  createdAt          DateTime @default(now())
+
+  deal    Deal?             @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  company PortfolioCompany? @relation(fields: [portfolioCompanyId], references: [id], onDelete: SetNull)
+
+  @@index([dealId])
+  @@index([portfolioCompanyId])
+}
+
+// ---------------------------------------------------------------------------
+// Activity: notes, tasks, documents (polymorphic-ish via optional FKs)
+// NoteType: NOTE | MEETING | CALL | EMAIL
+// ---------------------------------------------------------------------------
+
+model Note {
+  id                 String   @id @default(cuid())
+  content            String
+  type               String   @default("NOTE")
+  authorId           String
+  dealId             String?
+  portfolioCompanyId String?
+  createdAt          DateTime @default(now())
+
+  author  User              @relation(fields: [authorId], references: [id])
+  deal    Deal?             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  company PortfolioCompany? @relation(fields: [portfolioCompanyId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@index([portfolioCompanyId])
+}
+
+// TaskStatus: TODO | IN_PROGRESS | DONE
+// TaskPriority: LOW | MEDIUM | HIGH
+model Task {
+  id                 String    @id @default(cuid())
+  title              String
+  description        String?
+  status             String    @default("TODO")
+  priority           String    @default("MEDIUM")
+  dueDate            DateTime?
+  assigneeId         String?
+  dealId             String?
+  portfolioCompanyId String?
+  createdAt          DateTime  @default(now())
+
+  assignee User?             @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  deal     Deal?             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  company  PortfolioCompany? @relation(fields: [portfolioCompanyId], references: [id], onDelete: Cascade)
+
+  @@index([assigneeId])
+  @@index([dealId])
+  @@index([portfolioCompanyId])
+}
+
+// DocumentCategory: DATA_ROOM | LEGAL | FINANCIAL | PITCH_DECK | BOARD_MATERIALS | OTHER
+model Document {
+  id                 String   @id @default(cuid())
+  name               String
+  category           String   @default("OTHER")
+  note               String?
+  sizeKb             Int      @default(0)
+  uploadedById       String?
+  dealId             String?
+  portfolioCompanyId String?
+  fundId             String?
+  createdAt          DateTime @default(now())
+
+  uploadedBy User?             @relation(fields: [uploadedById], references: [id])
+  deal       Deal?             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  company    PortfolioCompany? @relation(fields: [portfolioCompanyId], references: [id], onDelete: Cascade)
+  fund       Fund?             @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@index([portfolioCompanyId])
+  @@index([fundId])
+}
